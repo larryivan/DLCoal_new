@@ -1,0 +1,10 @@
+msprime
+numpy
+matplotlib
+scikit-learn
+tqdm
+torch
+torchvision
+h5py
+pandas
+seaborn 
