@@ -7,4 +7,5 @@ torch
 torchvision
 h5py
 pandas
-seaborn 
+seaborn
+psutil

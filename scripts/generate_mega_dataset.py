@@ -10,6 +10,7 @@ from multiprocessing import Pool, cpu_count
 import gc
 import time
 from functools import partial
+import psutil
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -308,9 +309,16 @@ def generate_mega_dataset(num_samples, save_dir, sequence_length=10e6, num_indiv
         all_genotypes.extend(batch_genotypes)
         all_ne_histories.extend(batch_ne_histories)
         
-        # Memory cleanup
+        # Aggressive memory cleanup
         del batch_genotypes, batch_ne_histories, results, batch_sites
-        gc.collect()
+        del args_list  # Delete arguments list
+        gc.collect()  # Force garbage collection
+        
+        # Print memory usage after cleanup
+        import psutil
+        memory_percent = psutil.virtual_memory().percent
+        memory_used_gb = psutil.virtual_memory().used / 1e9
+        print(f"   💾 Memory usage after cleanup: {memory_used_gb:.1f}GB ({memory_percent:.1f}%)")
     
     total_time = time.time() - start_time
     print(f"\n✅ Simulation completed!")
@@ -340,10 +348,19 @@ def generate_mega_dataset(num_samples, save_dir, sequence_length=10e6, num_indiv
             padded = genotypes
         padded_genotypes.append(padded)
     
-    # Convert to optimized arrays
+    # Convert to optimized arrays with memory cleanup
     print("🔄 Converting to numpy arrays...")
     genotype_array = np.array(padded_genotypes, dtype=np.int8)
+    
+    # Clean up padded_genotypes immediately after conversion
+    del padded_genotypes, all_genotypes
+    gc.collect()
+    
     ne_history_array = np.array(all_ne_histories, dtype=np.float32)
+    
+    # Clean up original lists
+    del all_ne_histories
+    gc.collect()
     
     print(f"\n📏 Final dataset dimensions:")
     print(f"   Genotypes: {genotype_array.shape} ({genotype_array.dtype})")

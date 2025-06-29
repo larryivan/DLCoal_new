@@ -15,6 +15,7 @@ import time
 import gc
 from collections import defaultdict
 import json
+import psutil
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -39,6 +40,22 @@ def get_device():
         return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def print_memory_usage(stage_name=""):
+    """Print current memory usage."""
+    import psutil
+    memory = psutil.virtual_memory()
+    print(f"💾 {stage_name} Memory: {memory.used/1e9:.1f}GB/{memory.total/1e9:.1f}GB ({memory.percent:.1f}%)")
+
+
+def aggressive_cleanup():
+    """Perform aggressive memory cleanup."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
 
 
 class AdvancedTrainer:
@@ -79,13 +96,19 @@ class AdvancedTrainer:
         return genotypes, ne_histories, time_points
     
     def create_data_loader(self, genotypes, ne_histories, batch_size=64, shuffle=True):
-        """Create optimized PyTorch DataLoader."""
+        """Create optimized PyTorch DataLoader with memory management."""
+        print(f"   🔄 Converting to tensors (batch_size={batch_size})...")
+        
         # Convert to tensors
         genotypes_tensor = torch.FloatTensor(genotypes)
         ne_histories_tensor = torch.FloatTensor(np.log(ne_histories))  # Log space
         
         # Create dataset
         dataset = TensorDataset(genotypes_tensor, ne_histories_tensor)
+        
+        # Clear references to help with memory
+        del genotypes_tensor, ne_histories_tensor
+        gc.collect()
         
         # Use more workers if not on Windows
         num_workers = min(os.cpu_count(), 8) if os.name != 'nt' else 0
@@ -136,7 +159,12 @@ class AdvancedTrainer:
                 'Loss': f'{loss.item():.6f}',
                 'Avg': f'{total_loss/num_batches:.6f}'
             })
+            
+            # Clean up batch variables to prevent memory accumulation
+            del batch_genotypes, batch_ne, outputs, loss
         
+        # Clean up after training epoch
+        gc.collect()
         return total_loss / num_batches
     
     def validate_epoch(self, val_loader, criterion):
@@ -156,7 +184,12 @@ class AdvancedTrainer:
                 
                 total_loss += loss.item()
                 num_batches += 1
+                
+                # Clean up batch variables during validation
+                del batch_genotypes, batch_ne, outputs, loss
         
+        # Clean up after validation epoch
+        gc.collect()
         return total_loss / num_batches
     
     def train(self, train_loader, val_loader, num_epochs=200, learning_rate=0.001):
@@ -188,6 +221,10 @@ class AdvancedTrainer:
         # Training loop
         start_time = time.time()
         
+        # Initial memory cleanup before training
+        aggressive_cleanup()
+        print_memory_usage("Before training")
+        
         for epoch in range(1, num_epochs + 1):
             epoch_start = time.time()
             
@@ -208,9 +245,13 @@ class AdvancedTrainer:
             
             epoch_time = time.time() - epoch_start
             
-            # Print epoch summary
+            # Memory cleanup after every epoch
+            aggressive_cleanup()
+            
+            # Print epoch summary with memory info
             print(f"📊 Epoch {epoch:3d}: Train={train_loss:.6f}, Val={val_loss:.6f}, "
                   f"LR={optimizer.param_groups[0]['lr']:.2e}, Time={epoch_time:.1f}s")
+            print_memory_usage(f"Epoch {epoch}")
             
             # Save best model
             if val_loss < self.best_val_loss:
@@ -223,6 +264,7 @@ class AdvancedTrainer:
             if epoch % 10 == 0:
                 self.save_checkpoint(epoch)
                 self.plot_training_curves()
+                print(f"📁 Checkpoint saved at epoch {epoch}")
             
             # Early stopping check
             if epoch - self.best_epoch > 30:  # No improvement for 30 epochs
@@ -230,6 +272,11 @@ class AdvancedTrainer:
                 break
         
         total_time = time.time() - start_time
+        
+        # Final memory cleanup after training
+        aggressive_cleanup()
+        print_memory_usage("After training")
+        
         print(f"✅ Training completed in {total_time:.1f}s")
         print(f"🏆 Best validation loss: {self.best_val_loss:.6f} at epoch {self.best_epoch}")
         
@@ -308,9 +355,17 @@ class AdvancedTrainer:
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     batch_pred = self.model(batch)
                 predictions_log.append(batch_pred.cpu().numpy())
+                
+                # Clean up batch variables immediately
+                del batch, batch_pred
+                gc.collect()
             
             predictions_log = np.concatenate(predictions_log, axis=0)
             predictions = np.exp(predictions_log)  # Convert back from log space
+            
+            # Clean up intermediate variables
+            del predictions_log, val_genotypes_tensor
+            gc.collect()
         
         # Create comprehensive visualization
         self._create_prediction_plots(predictions, val_ne_histories, time_points, max_plots)
@@ -415,6 +470,10 @@ def main():
     train_genotypes, train_ne_histories, time_points = trainer.load_data(train_data_path)
     val_genotypes, val_ne_histories, _ = trainer.load_data(val_data_path)
     
+    # Force garbage collection after loading large datasets
+    aggressive_cleanup()
+    print_memory_usage("After data loading")
+    
     # Model parameters
     num_haplotypes = train_genotypes.shape[1]
     max_variants = train_genotypes.shape[2]
@@ -443,6 +502,12 @@ def main():
                                             batch_size=128, shuffle=True)
     val_loader = trainer.create_data_loader(val_genotypes, val_ne_histories, 
                                           batch_size=128, shuffle=False)
+    
+    # Clear original data arrays after creating loaders to free memory
+    print("🗑️ Clearing original data arrays to free memory...")
+    del train_genotypes, train_ne_histories, val_genotypes, val_ne_histories
+    aggressive_cleanup()
+    print_memory_usage("After data loader creation")
     
     # Train model for more epochs
     print("\n🚀 Starting large-scale training...")
